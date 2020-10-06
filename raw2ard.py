@@ -6,14 +6,14 @@ import copy
 import shutil
 import xmltodict
 
-import metadata
-import utility
+from . import metadata
+from . import utility
 
 from osgeo import gdal
 from pathlib import Path
 from datetime import datetime
 from collections import OrderedDict
-from densifygrid import DensifyGrid
+from . densifygrid import DensifyGrid
 
 import pdb
 
@@ -26,8 +26,17 @@ class Raw2Ard:
         """
 
         # get xml schema
-        with open ( 'recipes/base.xml' ) as fd:
-            self._base = xmltodict.parse( fd.read() )
+#         with open ( './s1am/recipes/base.xml' ) as fd: # make var path
+#             self._base = xmltodict.parse( fd.read() )
+
+#         with open ( os.getenv( 'S1_PROCESS_P1A' ) ) as fd: # make var path
+        with open ( './s1am/recipes/tomtest.xml' ) as fd: # make var path
+            self._pt1 = xmltodict.parse( fd.read() )
+        with open ( os.getenv( 'S1_PROCESS_P2A' ) ) as fd: # make var path
+            self._pt2 = xmltodict.parse( fd.read() )
+
+        self._dem_east = '/tmp/data/SRTM30_Fiji_E.tif'
+        self._dem_west = '/tmp/data/SRTM30_Fiji_W.tif'
 
         self._densify = DensifyGrid()
         self._fat_swath = 10.0
@@ -38,7 +47,7 @@ class Raw2Ard:
         return
 
 
-    def process ( self, scene, out_path, args=None  ):
+    def process ( self, scene, out_path, E_DEM, W_DEM, args=None  ):
 
         """
         entry point to class functionality
@@ -59,11 +68,16 @@ class Raw2Ard:
         # load metadata into dictionary
         meta = metadata.getManifest( utility.matchFile( dataset_files, '.*\/manifest.safe' ) )
         meta.update( metadata.getAnnotation( utility.matchFile( dataset_files, '.*\/annotation\/s1.*vv.*\.xml' ) ) )
-
-        # build pipeline schema
-        schema = self.buildSchema( copy.deepcopy( self._base ), meta )
-        outname = os.path.join( tmp_path, self.getOutName( schema, meta ) )
-
+        
+        # overall output product scene name
+        product = meta[ 'product' ]
+        nm = 'S1{}_{}_{}_{}'.format(  product[ 'satellite' ], 
+                                        product[ 'mode' ],
+                                        meta[ 'acquisition' ][ 'start' ].strftime( '%y%m%dT%H%M%S' ),
+                                        'bnr_orb_cal_ml_tf_tc_db' )
+        outname = os.path.join( tmp_path, nm )
+        print( f'OUTNAME: { outname }' )
+        
         ##### determine if scene crosses antemeridian #####
         extent = self.getSceneExtent( meta )
         if extent[ 'lon' ][ 'max' ] - extent[ 'lon' ][ 'min' ] > self._fat_swath:
@@ -71,16 +85,6 @@ class Raw2Ard:
             # densify annotated geolocation grid
             self._densify.process( utility.matchFiles( dataset_files, '.*\/annotation\/s1.*\.xml' ), grid_pts=250 )
             meta.update( metadata.getGeolocationGrid( utility.matchFile( dataset_files, '.*\/annotation\/s1.*vv.*\.xml' ) ) )
-
-            ##### set parameters of reader task #####
-            parameter = self.getParameterSet( schema, 'Read' )
-            parameter[ 'file' ] = dataset_files[ 0 ]        # parent path to extracted dataset
-            parameter[ 'formatName' ] = 'SENTINEL-1'
-
-            ##### insert subset task #####
-            schema = self.insertNewTask( schema, 'Subset', after='Read' )
-            param = self.getParameterSet ( schema, 'Subset' )
-            param['geoRegion'] = ''
 
             # split gcps into east / west sub-groups
             gcps = self.splitGcps( meta[ 'gcps' ] )
@@ -102,35 +106,79 @@ class Raw2Ard:
 
                     subset = self.getSubset( gcps[ hemisphere ], block )
 
-                    # copy values into schema dictionary
-                    param = self.getParameterSet ( schema, 'Subset' )
-                    param['region'] = ','.join( str ( int( x ) ) for x in subset )
-
-                    # create subset-specific output path
-                    param = self.getParameterSet ( schema, 'Write' )            
+                    # unq subset name
                     subset_name = '_'.join( str ( int( x ) ) for x in subset )
+                    print ( 'Processing {} subset: {}'.format( hemisphere, subset_name ) )
+                    
+                    ######################### PT1 - ####################################
+                    ##### load PT1 schema #####
+            #         schema = self.buildSchema( copy.deepcopy( self._base ), meta )
+                    schema = copy.deepcopy( self._pt1 ) 
+#                     print( schema )
+                    
+#                     print('dataset_files: ', dataset_files)
+                    
+                    ##### set parameters of reader task #####
+                    param = self.getParameterSet( schema, 'Read' )
+                    param[ 'file' ] = dataset_files[ 0 ] + '/manifest.safe'       # parent path to extracted dataset
+                    param[ 'formatName' ] = 'SENTINEL-1'
 
-                    param['file'] = os.path.join( outname, 'subset_' + subset_name )
-                    results.append( param['file'] ) 
+                    ##### insert subset task #####
+                    schema = self.insertNewTask( schema, 'Subset', after='Read' )
+                    param = self.getParameterSet ( schema, 'Subset' )
+                    param[ 'geoRegion' ] = ''
+                    
+                    ##### copy subset values into schema dictionary #####
+                    param = self.getParameterSet ( schema, 'Subset' )
+                    param[ 'region' ] = ','.join( str ( int( x ) ) for x in subset )
 
-                    # transform dict back to xml schema
+                    ##### ext dem input file #####
+                    param = self.getParameterSet ( schema, 'Terrain-Flattening' )
+                    if hemisphere == 'west':
+                        param[ 'externalDEMFile' ] = self._dem_west
+                    elif hemisphere == 'east':
+                        param[ 'externalDEMFile' ] = self._dem_east
+
+                    ##### ext dem input file #####
+                    param = self.getParameterSet ( schema, 'Terrain-Correction' )            
+                    if hemisphere == 'west':
+                        param[ 'externalDEMFile' ] = self._dem_west
+                    elif hemisphere == 'east':
+                        param[ 'externalDEMFile' ] = self._dem_east
+                        
+                    # create subset-specific output path
+#                     param = self.getParameterSet ( schema, 'Write(3)' )            
+                    param = self.getParameterSet ( schema, 'Write' )   
+                    param['formatName'] = 'ENVI'
+                    
+#                     outname_pt1 = os.path.join( outname, 'subset_'+ subset_name + '_bnr_orb_cal_ml')
+                    outname_pt1 = os.path.join( outname, 'subset_'+ subset_name + 'Orb_Cal_Deb_ML_TF_TC_dB')
+                    print( 'PT1 OUTNAME: ', outname_pt1 )
+                    param[ 'file' ] = outname_pt1
+#                     param[ 'file' ] = os.path.join( outname, outname_pt1 + 'subset_' + subset_name )
+                    results.append( param['file'] ) # needs to be final output for each subset ############
+
+                    # transform dict back to xml schema & save serialised xml schema to file
                     out = xmltodict.unparse( schema, pretty=True )
-
-                    # write serialized xml schema to file
-                    cfg_pathname = os.path.join ( tmp_path, '{}_{}.xml'.format( outname, subset_name ) )
+                    cfg_pathname = os.path.join ( tmp_path, '{}.xml'.format( os.path.basename(outname_pt1) ) )
                     with open( cfg_pathname, 'w+') as file:
                         file.write(out)
 
-                    ##### execute ard processing for subset #####
-                    print ( 'Processing {} subset: {}'.format( hemisphere, subset_name ) )
+                    ##### execute PT1 processing for subset #####
+                    print ( 'Processing PT1 {} subset: {}'.format( hemisphere, subset_name ) )
                     out, err, code = utility.execute( self._gpt, [ cfg_pathname ] )
+                    print ( f'OUT: { out }' )
+                    print ( f'ERR: { err }' )
                     print ( '... OK!' )
 
+            
                     # move onto next block
                     start_row += chunk_size
-
+            
+            print('mosaic VV')
             # mosaic subsets into single image
             self.generateImage( out_path, results, 'VV' )
+            print('mosaic VH')
             self.generateImage( out_path, results, 'VH' )
 
         #else:
@@ -138,6 +186,82 @@ class Raw2Ard:
             ##### do usual stuff #####
         
         return
+            
+            
+            
+            
+#                     ######################### PT2 - ####################################
+#                     ##### load PT2 schema #####
+#                     schema = copy.deepcopy( self._pt2 ) 
+#                     print( schema )
+                    
+#                     ##### set parameters of reader task #####
+#                     param = self.getParameterSet( schema, 'Read' )
+#                     param[ 'file' ] = outname_pt1 + '.dim'        # prev pt output as input
+#                     param[ 'formatName' ] = 'SENTINEL-1'
+
+#                     # create subset-specific output path
+#                     param = self.getParameterSet ( schema, 'Write' )            
+                    
+#                     outname_pt2 = os.path.join( outname, 'subset_'+ subset_name + '_bnr_orb_cal_ml_tf')
+#                     print( 'PT2 OUTNAME: ', outname_pt2 )
+#                     param[ 'file' ] = outname_pt2
+# #                     param[ 'file' ] = os.path.join( outname, outname_pt1 + 'subset_' + subset_name )
+# #                     results.append( param['file'] ) # needs to be final output for each subset ############
+
+#                     # transform dict back to xml schema & save serialised xml schema to file
+#                     out = xmltodict.unparse( schema, pretty=True )
+#                     cfg_pathname = os.path.join ( tmp_path, '{}.xml'.format( os.path.basename(outname_pt2) ) )
+#                     with open( cfg_pathname, 'w+') as file:
+#                         file.write(out)
+
+#                     ##### execute PT1 processing for subset #####
+#                     print ( 'Processing PT2 {} subset: {}'.format( hemisphere, subset_name ) )
+#                     out, err, code = utility.execute( self._gpt, [ cfg_pathname ] )
+#                     print ( f'OUT: { out }' )
+#                     print ( f'ERR: { err }' )
+#                     print ( '... OK!' )
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+
+#         cmd = [snap_gpt, int_graph_1, f"-Pinput_grd={input_mani}", f"-Poutput_ml={inter_prod1}"]
+#         root.info(cmd)
+#         run_snap_command(cmd)
+#         root.info(f"{in_scene} {scene_name} PROCESSED to MULTILOOK starting PT2")
+                
+#         if not os.path.exists(out_prod1):
+#             if ext_dem:
+#                 s3_download(s3_bucket, ext_dem, ext_dem_path)  # inc. function to subset by S1 scene extent on fly due to cog
+#                 cmd = [snap_gpt, int_graph_2, f"-Pinput_ml={inter_prod1}", f"-Pext_dem={ext_dem_path}", f"-Poutput_tf={inter_prod2}"]
+#                 root.info(cmd)
+#                 run_snap_command(cmd)
+#                 root.info(f"{in_scene} {scene_name} PROCESSED to TERRAIN FLATTEN starting PT3")
+
+
+#                 cmd = [snap_gpt, int_graph_3, f"-Pinput_tf={inter_prod2}", f"-Pext_dem={ext_dem_path}", f"-Poutput_db={out_prod1}"]
+#                 root.info(cmd)
+#                 run_snap_command(cmd)
+#                 root.info(f"{in_scene} {scene_name} PROCESSED to dB starting PT4")
+
+#                 cmd = [snap_gpt, int_graph_4, f"-Pinput_tf={inter_prod2}", f"-Pext_dem={ext_dem_path}", f"-Poutput_ls={out_prod2}"]
+#                 root.info(cmd)
+#                 run_snap_command(cmd)
+#                 root.info(f"{in_scene} {scene_name} PROCESSED to lsm starting COG conversion")
+                    
+                    
+                    
+                    
+                    
+
+
 
 
     def getArguments( self, args ):
@@ -212,7 +336,7 @@ class Raw2Ard:
         """
 
         # get xml schema for new task
-        with open ( os.path.join( 'recipes/nodes', name + '.xml'  )) as fd:
+        with open ( os.path.join( './s1am/recipes/nodes', name + '.xml'  )) as fd:
             new_task = xmltodict.parse( fd.read() )[ 'node' ]
 
         # create new ordered dict 
@@ -248,186 +372,202 @@ class Raw2Ard:
         return update
 
 
-    def buildSchema ( self, schema, meta ):
+#     def buildSchema ( self, schema, meta ):
 
-        """
-        initialise pipeline configuration schema
-        """
+#         """
+#         initialise pipeline configuration schema
+#         """
 
-        ##### optionally insert border noise removal #####
-        if self._remove_border_noise:
+#         #### optionally insert border noise removal #####
+#         if self._remove_border_noise:
 
-            # insert task and update parameters
-            schema = self.insertNewTask( schema, 'Remove-GRD-Border-Noise', after='Read' )
-            param = self.getParameterSet ( schema, 'Remove-GRD-Border-Noise' )
-            param['selectedPolarisations'] = ','.join( self._polarizations )
+#             insert task and update parameters
+#             schema = self.insertNewTask( schema, 'Remove-GRD-Border-Noise', after='Read' )
+#             param = self.getParameterSet ( schema, 'Remove-GRD-Border-Noise' )
+#             param['selectedPolarisations'] = ','.join( self._polarizations )
 
-        ##### optionally insert thermal noise removal #####
-        if self._remove_thermal_noise:
+#         #### optionally insert thermal noise removal #####
+#         if self._remove_thermal_noise:
 
-            schema = self.insertNewTask( schema, 'ThermalNoiseRemoval', after='Read' )
-            param = self.getParameterSet ( schema, 'ThermalNoiseRemoval' )
-            param['selectedPolarisations'] = ','.join( self._polarizations )
+#             schema = self.insertNewTask( schema, 'ThermalNoiseRemoval', after='Read' )
+#             param = self.getParameterSet ( schema, 'ThermalNoiseRemoval' )
+#             param['selectedPolarisations'] = ','.join( self._polarizations )
 
-        ##### update arguments for calibration task #####
-        param = self.getParameterSet ( schema, 'Calibration' )
-        param['selectedPolarisations'] = ','.join( self._polarizations )
-        param['sourceBands'] = ','.join ( ['Intensity_' + x for x in self._polarizations ] )
+#         #### update arguments for calibration task #####
+#         param = self.getParameterSet ( schema, 'Calibration' )
+#         param['selectedPolarisations'] = ','.join( self._polarizations )
+#         param['sourceBands'] = ','.join ( ['Intensity_' + x for x in self._polarizations ] )
 
-        ##### optionally insert terrain flattening #####
-        if self._terrain_flattening:
+#         #### optionally insert terrain flattening #####
+#         if self._terrain_flattening:
 
-            schema = self.insertNewTask( schema, 'Terrain-Flattening', after='Calibration' )
-            param = self.getParameterSet ( schema, 'Terrain-Flattening' )
+#             schema = self.insertNewTask( schema, 'Terrain-Flattening', after='Calibration' )
+#             param = self.getParameterSet ( schema, 'Terrain-Flattening' )
 
-            param['sourceBands'] = ','.join ( ['Beta0_' + x for x in self._polarizations ] )
-            param['reGridMethod'] = True if self._external_dem is None else False
-            pred_tc = 'Terrain-Flattening'
+# #             param['sourceBands'] = ','.join ( ['Beta0_' + x for x in self._polarizations ] )
+# #             param['reGridMethod'] = True if self._external_dem is None else False
+#             pred_tc = 'Terrain-Flattening'
 
-        else:
+#         else:
 
-            # update calibration output bands
-            param['outputBetaBand'] = False
-            param['outputGammaBand'] = True
-            pred_tc = 'Calibration'
+#             # update calibration output bands
+#             param['outputBetaBand'] = False
+#             param['outputGammaBand'] = True
+#             pred_tc = 'Calibration'
 
-        ##### insert terrain correction task #####
-        if self._geocoding == 'Range-Doppler':
+#         #### insert terrain correction task #####
+#         if self._geocoding == 'Range-Doppler':
 
-            # range doppler
-            schema = self.insertNewTask( schema, 'Terrain-Correction', after=pred_tc )
-            param = self.getParameterSet ( schema, 'Terrain-Correction' )
-            param['sourceBands'] = ','.join( ['Gamma0_' + x for x in self._polarizations ] )
+#             # range doppler
+#             schema = self.insertNewTask( schema, 'Terrain-Correction', after=pred_tc )
+#             param = self.getParameterSet ( schema, 'Terrain-Correction' )
+# #             param['sourceBands'] = ','.join( ['Gamma0_' + x for x in self._polarizations ] )
 
-        elif self._geocoding == 'Simulation-Cross-Correlation':
+#         elif self._geocoding == 'Simulation-Cross-Correlation':
 
-            # simulation cross correlation
-            schema = self.insertNewTask( schema, 'SAR-Simulation', after=pred_tc )
-            schema = self.insertNewTask( schema, 'Cross-Correlation', after='SAR-Simulation' )
-            schema = self.insertNewTask( schema, 'SARSim-Terrain-Correction', after='Cross-Correlation' )
+#             # simulation cross correlation
+#             schema = self.insertNewTask( schema, 'SAR-Simulation', after=pred_tc )
+#             schema = self.insertNewTask( schema, 'Cross-Correlation', after='SAR-Simulation' )
+#             schema = self.insertNewTask( schema, 'SARSim-Terrain-Correction', after='Cross-Correlation' )
 
-            param = self.getParameterSet ( schema, 'SAR-Simulation' )
-            param['sourceBands'] = ','.join( [ 'Gamma0_' + x for x in self._polarizations ] )
+#             param = self.getParameterSet ( schema, 'SAR-Simulation' )
+# #             param['sourceBands'] = ','.join( [ 'Gamma0_' + x for x in self._polarizations ] )
 
-        else:
+#         else:
 
-            # invalid geocoding configuration
-            raise ValueError ( 'Invalid geocoding configuration {}'.format( geocoding ) )
+#             # invalid geocoding configuration
+#             raise ValueError ( 'Invalid geocoding configuration {}'.format( geocoding ) )
 
-        ##### insert multilooking task #####
-        schema = self.insertNewTask( schema, 'Multilook', after='Calibration' )
-        looks = self.getMultiLookParameters( meta )
+#         ##### insert multilooking task #####
+#         schema = self.insertNewTask( schema, 'Multilook', after='Calibration' )
+#         looks = self.getMultiLookParameters( meta )
 
-        param = self.getParameterSet ( schema, 'Multilook' )
-        param['nRgLooks'] = looks[ 'range' ]
-        param['nAzLooks'] = looks[ 'azimuth' ]
+#         param = self.getParameterSet ( schema, 'Multilook' )
+#         param['nRgLooks'] = looks[ 'range' ]
+#         param['nAzLooks'] = looks[ 'azimuth' ]
         
-        # set up source bands
-        cal_param = self.getParameterSet ( schema, 'Calibration' )
-        if cal_param['outputBetaBand'] == 'true':
-            param['sourceBands'] = ','.join( ['Beta0_' + x for x in self._polarizations ] )
+#         # set up source bands
+#         cal_param = self.getParameterSet ( schema, 'Calibration' )
+# #         if cal_param['outputBetaBand'] == 'true':
+# #             param['sourceBands'] = ','.join( ['Beta0_' + x for x in self._polarizations ] )
 
-        elif cal_param['outputGammaBand'] == 'true':
-            param['sourceBands'] = ','.join( ['Gamma0_' + x for x in self._polarizations ] )
+# #         elif cal_param['outputGammaBand'] == 'true':
+# #             param['sourceBands'] = ','.join( ['Gamma0_' + x for x in self._polarizations ] )
 
-        ##### insert unit conversion task #####
-        if self._scaling in ['dB', 'db']:
-            source = 'Terrain-Correction' if self._geocoding == 'Range-Doppler' else 'SARSim-Terrain-Correction'
+#         ##### insert unit conversion task #####
+#         if self._scaling in ['dB', 'db']:
+#             source = 'Terrain-Correction' if self._geocoding == 'Range-Doppler' else 'SARSim-Terrain-Correction'
 
-            schema = self.insertNewTask( schema, 'LinearToFromdB', after=source )            
-            param = self.getParameterSet ( schema, 'LinearToFromdB' )
-            param['sourceBands'] = ','.join( ['Gamma0_' + x for x in self._polarizations ] )
+#             schema = self.insertNewTask( schema, 'LinearToFromdB', after=source )            
+#             param = self.getParameterSet ( schema, 'LinearToFromdB' )
+# #             param['sourceBands'] = ','.join( ['Gamma0_' + x for x in self._polarizations ] )
 
-        ##### write task #####
-        param = self.getParameterSet ( schema, 'Write' )
-        param['formatName'] = 'ENVI'
+#         ##### write task #####
+#         param = self.getParameterSet ( schema, 'Write' )
+#         param['formatName'] = 'BEAM-DIMAP'
 
-        ##### TODO - intermediate products #####
-        ##### TODO - dem configuration #####
-        ##### TODO - interpolation methods #####
-
-
-        return schema
+#         ##### TODO - intermediate products #####
+#         ##### TODO - dem configuration #####
+#         ##### TODO - interpolation methods #####
 
 
-    def getMultiLookParameters ( self, meta ):
-
-        """
-        convert target resolution into looks
-        """
-
-        looks = {}
-
-        # pixel spacing and target spatial resolution
-        sp_range = meta[ 'pixel_spacing' ][ 'range' ]
-        sp_azimuth  = meta[ 'pixel_spacing' ][ 'azimuth' ]
-
-        tr_range = self._target_resolution
-        tr_azimuth = self._target_resolution
-
-        # handle slant range
-        if meta[ 'projection' ] == 'Slant Range':
-
-            # compute ground range resolution and range looks
-            gr_ps = sp_range / ( math.sin( math.radians( meta[ 'incidence_mid_swath' ] ) ) )
-            looks[ 'range' ] = int(math.floor( float( tr_range ) / gr_ps ) )
-
-        elif meta[ 'projection' ] == 'Ground Range':
-
-            # compute range looks
-            looks[ 'range' ] = int(math.floor( float(tr_range) / sp_range ) )
-
-        else:
-            raise ValueError( 'Invalid parameter value : {}'.format( meta[ 'projection' ] ) )
-
-        # compute the azimuth looks
-        looks[ 'azimuth' ] = int(math.floor(float(tr_azimuth) / sp_azimuth))
-
-        # set the look factors to 1 if they were computed to be 0
-        looks[ 'range' ] = looks[ 'range' ] if looks[ 'range' ] > 0 else 1
-        looks[ 'azimuth' ] = looks[ 'azimuth' ] if looks[ 'azimuth' ] > 0 else 1
-
-        return looks
+#         return schema
 
 
-    def getOutName( self, schema, meta ):
+#     def getMultiLookParameters ( self, meta ):
+
+#         """
+#         convert target resolution into looks
+#         """
+
+#         looks = {}
+
+#         # pixel spacing and target spatial resolution
+#         sp_range = meta[ 'pixel_spacing' ][ 'range' ]
+#         sp_azimuth  = meta[ 'pixel_spacing' ][ 'azimuth' ]
+
+#         tr_range = self._target_resolution
+#         tr_azimuth = self._target_resolution
+
+#         # handle slant range
+#         if meta[ 'projection' ] == 'Slant Range':
+
+#             # compute ground range resolution and range looks
+#             gr_ps = sp_range / ( math.sin( math.radians( meta[ 'incidence_mid_swath' ] ) ) )
+#             looks[ 'range' ] = int(math.floor( float( tr_range ) / gr_ps ) )
+
+#         elif meta[ 'projection' ] == 'Ground Range':
+
+#             # compute range looks
+#             looks[ 'range' ] = int(math.floor( float(tr_range) / sp_range ) )
+
+#         else:
+#             raise ValueError( 'Invalid parameter value : {}'.format( meta[ 'projection' ] ) )
+
+#         # compute the azimuth looks
+#         looks[ 'azimuth' ] = int(math.floor(float(tr_azimuth) / sp_azimuth))
+
+#         # set the look factors to 1 if they were computed to be 0
+#         looks[ 'range' ] = looks[ 'range' ] if looks[ 'range' ] > 0 else 1
+#         looks[ 'azimuth' ] = looks[ 'azimuth' ] if looks[ 'azimuth' ] > 0 else 1
+
+#         return looks
+
+
+    def getOutName( self, schema_part, meta ):
 
         """
         derive file identifier from pipeline / dataset
         """
-
-        def stringifyPipeline( schema ):
-
-            """
-            create operator shortname string tokenised by underscores
-            """
-
-            # operator shortnames
-            Lut = { 'Remove-GRD-Border-Noise': 'bnr',
-                    'ThermalNoiseRemoval': 'tnr',
-                    'Apply-Orbit-File': 'Orb',
-                    'Calibration': 'Cal',
-                    'Multilook': 'ML',
-                    'Terrain-Flattening': 'TF',
-                    'Terrain-Correction': 'TC',
-                    'LinearToFromdB' : 'db' }
-
-            ops = []
-
-            # return op shortnames separated with underscore
-            for obj in schema[ 'graph' ][ 'node' ]:
-
-                if obj[ 'operator' ] in Lut:
-                    ops.append( Lut[ obj[ 'operator' ] ] )
-
-            return '_'.join( ops )            
-
-        # append dataset parameters to op shortname string
+            
+        Lut = { 'pt0': 'bnr_orb_cal_ml_tf_tc_db',
+                'pt1': 'bnr_orb_cal_ml',
+                'pt2': 'bnr_orb_cal_ml_tf',
+                'pt3': 'bnr_orb_cal_ml_tf_tc_db',
+                'pt4': 'bnr_orb_cal_ml_tf_tc_ls'
+              }        
         product = meta[ 'product' ]
-        return 'S1{}_{}_{}_{}'.format(  product[ 'satellite' ], 
+
+        nm = 'S1{}_{}_{}_{}'.format(  product[ 'satellite' ], 
                                         product[ 'mode' ],
                                         meta[ 'acquisition' ][ 'start' ].strftime( '%y%m%dT%H%M%S' ),
-                                        stringifyPipeline( schema ) )
+                                        Lut[ schema_part ] )
+        print( f'OUTNAME - {schema_part}: {nm}' )
+        return nm
+        
+        
+#         def stringifyPipeline( schema ):
+
+#             """
+#             create operator shortname string tokenised by underscores
+#             """
+
+#             # operator shortnames
+#             Lut = { 'Remove-GRD-Border-Noise': 'bnr',
+#                     'ThermalNoiseRemoval': 'tnr',
+#                     'Apply-Orbit-File': 'Orb',
+#                     'Calibration': 'Cal',
+#                     'Multilook': 'ML',
+#                     'Terrain-Flattening': 'TF',
+#                     'Terrain-Correction': 'TC',
+#                     'LinearToFromdB' : 'db' }
+
+#             ops = []
+
+#             # return op shortnames separated with underscore
+#             for obj in schema[ 'graph' ][ 'node' ]:
+
+#                 if obj[ 'operator' ] in Lut:
+#                     ops.append( Lut[ obj[ 'operator' ] ] )
+
+#             return '_'.join( ops )            
+
+#         # append dataset parameters to op shortname string
+#         product = meta[ 'product' ]
+#         return 'S1{}_{}_{}_{}'.format(  product[ 'satellite' ], 
+#                                         product[ 'mode' ],
+#                                         meta[ 'acquisition' ][ 'start' ].strftime( '%y%m%dT%H%M%S' ),
+#                                         stringifyPipeline( schema ) )
 
 
     def getSceneExtent( self, meta ):

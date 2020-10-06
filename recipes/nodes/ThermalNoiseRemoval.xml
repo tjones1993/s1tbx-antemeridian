@@ -4,7 +4,7 @@
         <sourceProduct refid="Read"/>
     </sources>
     <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-        <selectedPolarisations>VV,VH</selectedPolarisations>
+        <selectedPolarisations/>
         <removeThermalNoise>true</removeThermalNoise>
         <reIntroduceThermalNoise>false</reIntroduceThermalNoise>
     </parameters>

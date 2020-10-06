@@ -4,7 +4,7 @@
         <sourceProduct refid="Read"/>
     </sources>
     <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-        <selectedPolarisations>VV,VH</selectedPolarisations>
+        <selectedPolarisations>VH,VV</selectedPolarisations>
         <borderLimit>500</borderLimit>
         <trimThreshold>0.5</trimThreshold>
     </parameters>

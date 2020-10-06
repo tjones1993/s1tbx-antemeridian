@@ -16,7 +16,7 @@
         <parameters class="com.bc.ceres.binding.dom.XppDomElement">
             <orbitType>Sentinel Precise (Auto Download)</orbitType>
             <polyDegree>3</polyDegree>
-            <continueOnFail>false</continueOnFail>
+            <continueOnFail>true</continueOnFail>
         </parameters>
     </node>
     <node id="Calibration">
@@ -25,14 +25,14 @@
             <sourceProduct refid="Apply-Orbit-File"/>
         </sources>
         <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-            <sourceBands>Intensity_VV,Intensity_VH</sourceBands>
+            <sourceBands/>
             <auxFile>Product Auxiliary File</auxFile>
             <externalAuxFile/>
             <outputImageInComplex>false</outputImageInComplex>
             <outputImageScaleInDb>false</outputImageScaleInDb>
             <createGammaBand>false</createGammaBand>
             <createBetaBand>false</createBetaBand>
-            <selectedPolarisations>VV,VH</selectedPolarisations>
+            <selectedPolarisations>VH,VV</selectedPolarisations>
             <outputSigmaBand>false</outputSigmaBand>
             <outputGammaBand>false</outputGammaBand>
             <outputBetaBand>true</outputBetaBand>

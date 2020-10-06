@@ -3,7 +3,7 @@ import xmltodict
 
 from osgeo import gdal
 from datetime import datetime
-from utility import findItems
+from . utility import findItems
 
 def getManifest( pathname ):
 

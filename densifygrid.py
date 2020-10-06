@@ -399,7 +399,7 @@ class DensifyGrid:
             geo_y = geo_t[ 3 ] + gcp.GCPPixel * geo_t[ 4 ] + gcp.GCPLine * geo_t[ 5 ]
 
             sum_error += math.sqrt (  ( gcp.GCPX - geo_x )**2 + ( gcp.GCPY - geo_y )**2 ) 
-            print ( geo_x, geo_y, gcp.GCPX, gcp.GCPY )
+#             print ( geo_x, geo_y, gcp.GCPX, gcp.GCPY )
 
         return sum_error / len ( gcps )
 

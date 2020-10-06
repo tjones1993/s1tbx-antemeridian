@@ -4,7 +4,7 @@
         <sourceProduct refid="Multilook"/>
     </sources>
     <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-        <sourceBands/>
+        <sourceBands>Beta0_VV,Beta0_VH</sourceBands>
         <demName>SRTM 1Sec HGT</demName>
         <demResamplingMethod>BILINEAR_INTERPOLATION</demResamplingMethod>
         <externalDEMFile/>
